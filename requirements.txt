@@ -1,0 +1,16 @@
+django
+djangorestframework
+psycopg2-binary
+djangorestframework-simplejwt
+requests
+python-dotenv>=1.0.0
+celery>=5.3.0
+redis>=4.5.0
+langgraph-sdk>=0.1.70
+aiohttp>=3.8.0
+django-celery-results>=2.5.1
+django-celery-beat>=2.5.0
+django-cors-headers>=4.0.0
+asgiref>=3.6.0
+pydantic>=2.0.0
+langsmith
