@@ -95,7 +95,7 @@ class PullRequestViewSet(viewsets.ModelViewSet):
                     github_token=request.user.github_access_token,
                     owner_login=owner_login,
                     repo_name=repo_name_only,
-                    state=request.query_params.get('status', 'all'), # Pass status filter
+                    # state=request.query_params.get('status', 'all'), # Pass status filter
                     per_page=per_page,
                     page=page
                     # Add other filters like sort, direction if needed by the service
