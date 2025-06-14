@@ -46,99 +46,140 @@ class CommitViewSet(viewsets.ModelViewSet):
 
         if not CanAccessRepository().has_object_permission(request, self, db_repo):
             raise PermissionDenied("You do not have permission to access this repository.")
+        page = int(request.query_params.get('page', 1))
+        per_page = int(request.query_params.get('per_page', 30))
+        # Prepare filters for GitHub API call
+        author_filter = request.query_params.get('author')
+        since_filter_str = request.query_params.get('date_from')
+        until_filter_str = request.query_params.get('date_to')
 
-        db_items = CommitModel.objects.filter(repository=db_repo).order_by('-timestamp')
+        formatted_since_filter = None
+        if since_filter_str:
+            # Assuming frontend sends YYYY-MM-DD. Convert to YYYY-MM-DDTHH:MM:SSZ.
+            try:
+                # Validate and ensure it's a date before formatting
+                parsed_date = parse_datetime(since_filter_str + "T00:00:00Z")
+                if parsed_date:
+                    formatted_since_filter = since_filter_str + "T00:00:00Z"
+                else: # Should not happen if parse_datetime raises ValueError on failure
+                    logger.warning(f"Could not parse date_from: {since_filter_str}. Ignoring filter.")
+            except ValueError:
+                logger.warning(f"Invalid date_from format: {since_filter_str}. Expected YYYY-MM-DD. Ignoring filter.")
+                # Optionally, you could return a 400 error:
+                # return Response({"detail": f"Invalid date_from format: {since_filter_str}. Expected YYYY-MM-DD."}, status=status.HTTP_400_BAD_REQUEST)
+
+        formatted_until_filter = None
+        if until_filter_str:
+            # Assuming frontend sends YYYY-MM-DD. Convert to YYYY-MM-DDTHH:MM:SSZ.
+            try:
+                # Validate and ensure it's a date before formatting
+                parsed_date = parse_datetime(until_filter_str + "T23:59:59Z")
+                if parsed_date:
+                    formatted_until_filter = until_filter_str + "T23:59:59Z"
+                else: # Should not happen if parse_datetime raises ValueError on failure
+                    logger.warning(f"Could not parse date_to: {until_filter_str}. Ignoring filter.")
+            except ValueError:
+                logger.warning(f"Invalid date_to format: {until_filter_str}. Expected YYYY-MM-DD. Ignoring filter.")
+                # Optionally, you could return a 400 error:
+                # return Response({"detail": f"Invalid date_to format: {until_filter_str}. Expected YYYY-MM-DD."}, status=status.HTTP_400_BAD_REQUEST)
+        combined_items_dict = {}
+        # Only include DB items if it's the first page of a general listing 
+        # or if specific filters that might only hit the DB are applied (not covered here).
+        # For simple pagination, page 1 gets DB items.
+        if page == 1:
+            db_items = CommitModel.objects.filter(repository=db_repo).order_by('-timestamp')
+            if since_filter_str:
+                db_items = db_items.filter(timestamp__gte=formatted_since_filter)
+            if until_filter_str:
+                db_items = db_items.filter(timestamp__lte=formatted_until_filter)
+            # Consider paginating DB items as well if there are many, for now, taking all for page 1
+            serialized_db_items = self.get_serializer(db_items, many=True).data
+            for item in serialized_db_items:
+                item['source'] = 'db'
+                combined_items_dict[item['commit_hash']] = item
         
-        serialized_db_items = self.get_serializer(db_items, many=True).data
-        for item in serialized_db_items:
-            item['source'] = 'db'
-
-        combined_items_dict = {item['commit_hash']: item for item in serialized_db_items} # Use commit_hash
+        github_items_for_current_page = []
 
         if not request.user.github_access_token:
             logger.warning(f"User {request.user.id} has no GitHub token. Fetching commits from DB only for repo {db_repo.id}")
+            if page > 1: # If no GitHub token and asking for page > 1, return empty if DB items were only on page 1
+                return Response([])
         else:
             try:
-                page = int(request.query_params.get('page', 1))
-                per_page = int(request.query_params.get('per_page', 30)) # Default to 30, can be adjusted
-
                 owner_login = db_repo.owner.username
                 repo_name_only = db_repo.repo_name.split('/')[-1]
-                
                 gh_items_raw = get_repository_commits_from_github(
                     github_token=request.user.github_access_token,
                     owner_login=owner_login,
                     repo_name=repo_name_only,
                     per_page=per_page,
-                    page=page
+                    page=page,
+                    author=author_filter, 
+                    since=formatted_since_filter,
+                    until=formatted_until_filter
                 )
 
                 for gh_commit in gh_items_raw:
-                    # Use gh_commit['sha'] as the key for matching
+                    # If on page 1, add GitHub item only if not already present from DB
+                    # If on page > 1, combined_items_dict is initially empty (or only contains GH items from previous GH pages if backend paginated GH internally)
+                    # So, this check effectively de-duplicates against DB items on page 1.
                     if gh_commit['sha'] not in combined_items_dict:
                         commit_data = gh_commit.get('commit', {})
-                        author_data = commit_data.get('author', {}) # Git author
-                        committer_data = commit_data.get('committer', {}) # Git committer
-                        
-                        # GitHub user objects (can be different from git author/committer)
-                        gh_author_user = gh_commit.get('author') # GitHub user who authored
-                        gh_committer_user = gh_commit.get('committer') # GitHub user who committed
+                        author_data = commit_data.get('author', {})
+                        committer_data = commit_data.get('committer', {})
+                        gh_author_user = gh_commit.get('author')
+                        gh_committer_user = gh_commit.get('committer')
 
                         transformed_gh_item = {
                             'commit_hash': gh_commit.get('sha'),
                             'message': commit_data.get('message'),
-                            
                             'author_name': author_data.get('name'),
                             'author_email': author_data.get('email'),
-                            # 'author_date': author_data.get('date'), # Replaced by timestamp
-                            
                             'committer_name': committer_data.get('name'),
                             'committer_email': committer_data.get('email'),
-                            'committed_date': committer_data.get('date'), # Keep this for committer specific date
-                            
+                            'committed_date': committer_data.get('date'),
                             'url': gh_commit.get('html_url'),
                             'source': 'github',
                             'id': None, 
                             'repository_id': db_repo.id,
                             'created_at': None, 
                             'updated_at': None,
-
-                            # Align with model fields
-                            'timestamp': author_data.get('date'), # Use git author date for the main commit timestamp
+                            'timestamp': author_data.get('date'),
                             'author_github_id': str(gh_author_user.get('id')) if gh_author_user else None,
                             'committer_github_id': str(gh_committer_user.get('id')) if gh_committer_user else None,
                         }
-                        # Use serializer to ensure consistent output structure, passing instance=transformed_gh_item
-                        # This is tricky if serializer expects a model instance.
-                        # For now, we construct a dict and assume client handles it.
-                        # A better way might be to have a different serializer for GitHub-only objects
-                        # or make the main serializer flexible.
                         serializer_instance = self.get_serializer(data=transformed_gh_item)
-                        
                         if serializer_instance.is_valid():
                             validated_data = serializer_instance.data
-                            # Ensure 'source' is present if it's part of read_only_fields but you want it in output
-                            validated_data['source'] = 'github' 
-                            combined_items_dict[gh_commit['sha']] = validated_data
+                            validated_data['source'] = 'github'
+                            # For page > 1, we add directly to a list that will be returned.
+                            # For page 1, we add to combined_items_dict to merge with DB items.
+                            if page == 1:
+                                combined_items_dict[gh_commit['sha']] = validated_data
+                            else:
+                                github_items_for_current_page.append(validated_data)
                         else:
                              logger.error(f"GitHub commit data for {gh_commit['sha']} not valid for serializer: {serializer_instance.errors}")
-                             # If not valid, store the raw transformed dict but ensure it's what you want
-                             # Adding repository_id for context if it was missing and causing validation error
-                             transformed_gh_item['repository_id'] = db_repo.id # Ensure this is set
-                             transformed_gh_item['source'] = 'github' # Explicitly set source
-                             combined_items_dict[gh_commit['sha']] = transformed_gh_item
-
-
+                             transformed_gh_item['repository_id'] = db_repo.id
+                             transformed_gh_item['source'] = 'github'
+                             if page == 1:
+                                 combined_items_dict[gh_commit['sha']] = transformed_gh_item
+                             else:
+                                 github_items_for_current_page.append(transformed_gh_item)
             except requests.exceptions.RequestException as e:
                 logger.error(f"GitHub API error while fetching commits for repo {db_repo.id}: {e}")
-                # Proceed with DB items, or return error
             except Exception as e:
                 logger.error(f"Unexpected error while fetching GitHub commits for repo {db_repo.id}: {e}")
 
+        if page == 1:
+            final_list = list(combined_items_dict.values())
+            # Optionally sort combined list if order matters and DB/GitHub items interleave
+            # final_list.sort(key=lambda x: (parse_datetime(x['timestamp']) if x.get('timestamp') else None), reverse=True)
 
-        final_list = list(combined_items_dict.values())
-        # Optionally, re-sort if mixing sources changed order
-        # final_list.sort(key=lambda x: x.get('committed_date') or x.get('author_date'), reverse=True)
+        else:
+            final_list = github_items_for_current_page
+            # Sort if necessary, GitHub usually returns in order
+            # final_list.sort(key=lambda x: (parse_datetime(x['timestamp']) if x.get('timestamp') else None), reverse=True)
         return Response(final_list)
 
     @action(detail=False,url_path='trigger-review', methods=['post'])
@@ -308,95 +349,3 @@ class CommitViewSet(viewsets.ModelViewSet):
             "review_id": review.id,
             "status": review.status
         }, status=status.HTTP_201_CREATED)
-        # """
-        # Manually trigger an AI review for a commit.
-        
-        # Args:
-        #     commit_hash: The hash of the Commit model instance
-        
-        # Returns:
-        #     Response with the review ID and status
-        # """
-        # # Get the commit
-        # commit = self.get_object()
-        # repository = commit.repository
-        
-        # # Check permissions (must be owner or collaborator)
-        # if not CanAccessRepository().has_object_permission(request, self, repository):
-        #     raise PermissionDenied("You do not have permission to trigger reviews for this repository.")
-        
-        # # Check for existing reviews that are completed or in progress
-        # existing_reviews = ReviewModel.objects.filter(
-        #     commit=commit,
-        #     status__in=['completed', 'in_progress', 'pending']
-        # )
-        
-        # if existing_reviews.exists():
-        #     # Return the most recent review
-        #     latest_review = existing_reviews.order_by('-created_at').first()
-        #     return Response({
-        #         "detail": f"A review for this commit already exists with status '{latest_review.status}'.",
-        #         "review_id": latest_review.id,
-        #         "status": latest_review.status
-        #     }, status=status.HTTP_409_CONFLICT)
-        
-        # # Create a new review
-        # review = ReviewModel.objects.create(
-        #     repository=repository,
-        #     commit=commit,
-        #     status='pending',
-        #     review_data={'message': 'Commit review manually triggered by user.'}
-        # )
-        
-        # # Prepare data for the Celery task
-        # event_data = {
-        #     'commit': {
-        #         'id': commit.commit_hash,
-        #         'sha': commit.commit_hash,
-        #         'message': commit.message,
-        #         'url': commit.url,
-        #         'author': {
-        #             'id': commit.author_github_id,
-        #             'name': (
-        #                 User.objects.filter(github_id=commit.author_github_id).values_list('username', flat=True).first() 
-        #                 if commit.author_github_id and User.objects.filter(github_id=commit.author_github_id).exists()
-        #                 else None
-        #             ),
-        #             'email': (
-        #                 User.objects.filter(github_id=commit.author_github_id).values_list('email', flat=True).first()
-        #                 if commit.author_github_id and User.objects.filter(github_id=commit.author_github_id).exists()
-        #                 else None
-        #             )
-        #         },
-        #         'committer': {
-        #             'id': commit.committer_github_id,
-        #             'name': (
-        #                 User.objects.filter(github_id=commit.committer_github_id).values_list('username', flat=True).first()
-        #                 if commit.committer_github_id and User.objects.filter(github_id=commit.committer_github_id).exists()
-        #                 else None
-        #             ),
-        #             'email': (
-        #                 User.objects.filter(github_id=commit.committer_github_id).values_list('email', flat=True).first()
-        #                 if commit.committer_github_id and User.objects.filter(github_id=commit.committer_github_id).exists()
-        #                 else None
-        #             )
-        #         },
-        #         'timestamp': commit.timestamp.isoformat() if commit.timestamp else None
-        #     },
-        #     'repository': {
-        #         'id': repository.github_native_id,
-        #         'full_name': repository.repo_name,
-        #         'owner': {'login': repository.owner.username}
-        #     },
-        #     'action': 'manual_trigger'
-        # }
-        
-        # # Enqueue the review task
-        # process_commit_review.delay(event_data, repository.id, commit.id)
-        
-        # # Return response
-        # return Response({
-        #     "detail": "AI review has been triggered for the commit.",
-        #     "review_id": review.id,
-        #     "status": review.status
-        # }, status=status.HTTP_201_CREATED)

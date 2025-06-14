@@ -11,7 +11,7 @@ GITHUB_OAUTH_TOKEN_URL = "https://github.com/login/oauth/access_token"
 GITHUB_API_USER_URL = "https://api.github.com/user"
 GITHUB_API_BASE_URL = "https://api.github.com"
 
-# GitHub OAuth scopes needed (mirroring your FastAPI setup)
+# GitHub OAuth scopes needed
 GITHUB_SCOPES = [
     "read:user",
     "user:email",
@@ -19,7 +19,6 @@ GITHUB_SCOPES = [
     "repo:status",
     "repo_deployment",
     "public_repo",
-    "read:org",
     "repo:invite",
     "security_events"
 ]
@@ -135,7 +134,7 @@ def get_repo_collaborators_from_github(github_token, owner_login, repo_name, pag
     response.raise_for_status()
     return response.json()
 
-def get_repository_commits_from_github(github_token: str, owner_login: str, repo_name: str, per_page: int = 30, page: int = 1):
+def get_repository_commits_from_github(github_token: str, owner_login: str, repo_name: str, per_page: int = 30, page: int = 1,  author: str = None, since: str = None, until: str = None):
     """
     Fetches commits for a specific repository from the GitHub API.
     """
@@ -144,7 +143,12 @@ def get_repository_commits_from_github(github_token: str, owner_login: str, repo
         "Accept": "application/vnd.github.v3+json",
     }
     params = {"per_page": per_page, "page": page}
-    
+    if author:
+        params['author'] = author
+    if since:
+        params['since'] = since
+    if until:
+        params['until'] = until
     url = f"https://api.github.com/repos/{owner_login}/{repo_name}/commits"
     response = requests.get(url, headers=headers, params=params)
     response.raise_for_status()  # Raise an exception for bad status codes

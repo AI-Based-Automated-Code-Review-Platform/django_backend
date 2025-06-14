@@ -11,9 +11,6 @@ class RepositorySerializer(serializers.ModelSerializer):
     owner = UserSerializer(read_only=True)
     # For request (create/update), owner will be set from the request user, not from input data.
     # For response, owner will be serialized.
-    
-    # Fields from FastAPI RepositoryCreate/Update/Response
-    # repo_name, repo_url, description, github_native_id, coding_standards, code_metrics, llm_preference, webhook_url
 
     # webhook_url will be generated on creation, can be read_only for updates unless explicitly allowed.
     webhook_url = serializers.CharField(read_only=True, allow_null=True)
@@ -369,19 +366,22 @@ class AdminUserUpdateSerializer(serializers.ModelSerializer):
         model = User
         fields = ['username', 'email', 'is_admin', 'is_staff', 'is_active'] # Fields admin can update
         # Ensure that sensitive fields like password, github_id, github_access_token are not here
-
+class RepositoryMinimalSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = DBRepository
+        fields = ['repo_name', 'repo_url', 'description', 'webhook_url']
 # Add other serializers here as we migrate endpoints
 class WebhookEventLogSerializer(serializers.ModelSerializer):
-    repository_id = serializers.PrimaryKeyRelatedField(
-        queryset=DBRepository.objects.all(), source='repository', write_only=True, required=False
-    )
-    repository = RepositorySerializer(read_only=True)
+    repository = RepositoryMinimalSerializer(read_only=True)
     
     class Meta:
         model = WebhookEventLog
         fields = [
-            'id', 'repository', 'repository_id', 'event_id', 'event_type', 
-            'payload', 'headers', 'status', 'error_message', 
-            'processed_at', 'created_at', 'updated_at'
+            'id',
+            'event_type',
+            'status',
+            'created_at',
+            'error_message',
+            'repository',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'repository']

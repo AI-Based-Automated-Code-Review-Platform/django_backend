@@ -152,17 +152,6 @@ class ReviewViewSet(viewsets.ModelViewSet):
         # The client might expect a title or initial message.
         title = request.data.get('title', f'Conversation for Review {review.id}')
         
-        # If thread creation involves LangGraph to get a langgraph_thread_id:
-        # langgraph_client = LangGraphClient()
-        # async_to_sync(langgraph_client.initialize)()
-        # lg_thread_response = async_to_sync(langgraph_client.create_thread_for_review)(review_id=review.id)
-        # langgraph_native_thread_id = lg_thread_response.get('thread_id')
-        # if not langgraph_native_thread_id:
-        #     return Response({"detail": "Failed to create LangGraph thread."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-        # For simplicity, assuming thread_id is generated or not strictly needed from LangGraph at this stage
-        # Or that the first message via "reply" to this new thread will establish it in LangGraph.
-        
         new_thread = ThreadModel.objects.create(
             review=review,
             title=title,

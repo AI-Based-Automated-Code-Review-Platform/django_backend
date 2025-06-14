@@ -57,19 +57,19 @@ class User(AbstractBaseUser, PermissionsMixin, TimestampMixin):
 
 class Repository(TimestampMixin):
     owner = models.ForeignKey(settings.AUTH_USER_MODEL, related_name='repositories', on_delete=models.CASCADE)
-    github_native_id = models.IntegerField(unique=True, null=True, blank=True, db_index=True) # From Alembic: github_native_id
-    repo_name = models.CharField(max_length=255) # FastAPI: repo_name
-    repo_url = models.CharField(max_length=255) # FastAPI: repo_url, ensure this is the HTML URL
-    description = models.TextField(null=True, blank=True) # FastAPI: description
-    coding_standards = models.JSONField(null=True, blank=True) # FastAPI: coding_standards (List[str])
-    code_metrics = models.JSONField(null=True, blank=True) # FastAPI: code_metrics (List[str])
-    llm_preference = models.CharField(max_length=255, null=True, blank=True) # FastAPI: llm_preference
-    webhook_url = models.CharField(max_length=255, null=True, blank=True) # FastAPI: webhook_url
-    webhook_secret = models.CharField(max_length=255, null=True, blank=True) # For verifying incoming webhooks
-    webhook_last_event_at = models.DateTimeField(null=True, blank=True) # FastAPI: webhook_last_event_at
+    github_native_id = models.IntegerField(unique=True, null=True, blank=True, db_index=True)
+    repo_name = models.CharField(max_length=255) 
+    repo_url = models.CharField(max_length=255)
+    description = models.TextField(null=True, blank=True)
+    coding_standards = models.JSONField(null=True, blank=True)
+    code_metrics = models.JSONField(null=True, blank=True)
+    llm_preference = models.CharField(max_length=255, null=True, blank=True)
+    webhook_url = models.CharField(max_length=255, null=True, blank=True)
+    webhook_secret = models.CharField(max_length=255, null=True, blank=True)
+    webhook_last_event_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
-        unique_together = ('owner', 'repo_name') # Alembic: UniqueConstraint('owner_id', 'repo_name')
+        unique_together = ('owner', 'repo_name')
         verbose_name_plural = "Repositories"
 
     def __str__(self):
@@ -86,10 +86,10 @@ class RepoCollaborator(TimestampMixin):
     ]
     repository = models.ForeignKey(Repository, related_name='collaborators', on_delete=models.CASCADE)
     user = models.ForeignKey(settings.AUTH_USER_MODEL, related_name='repo_collaborations', on_delete=models.CASCADE)
-    role = models.CharField(max_length=50, choices=ROLE_CHOICES) # Alembic: role_enum
+    role = models.CharField(max_length=50, choices=ROLE_CHOICES)
 
     class Meta:
-        unique_together = ('repository', 'user') # Alembic: UniqueConstraint('repo_id', 'user_id')
+        unique_together = ('repository', 'user')
 
     def __str__(self):
         return f"{self.user.username} - {self.repository.repo_name} ({self.role})"
@@ -102,11 +102,11 @@ class PullRequest(TimestampMixin):
     ]
     repository = models.ForeignKey(Repository, related_name='pull_requests', on_delete=models.CASCADE)
     pr_github_id = models.CharField(max_length=255,unique=True) # GitHub's own ID for the PR, not our DB ID.
-    pr_number = models.IntegerField() # Alembic: pr_number
-    title = models.CharField(max_length=255) # Alembic: pr_title
-    author_github_id = models.CharField(max_length=255) # Alembic: pr_author (assuming this is github id)
-    status = models.CharField(max_length=50, choices=PR_STATUS_CHOICES) # Alembic: pr_status_enum
-    url = models.CharField(max_length=255) # Alembic: pr_url
+    pr_number = models.IntegerField() 
+    title = models.CharField(max_length=255)
+    author_github_id = models.CharField(max_length=255)
+    status = models.CharField(max_length=50, choices=PR_STATUS_CHOICES)
+    url = models.CharField(max_length=255)
     body = models.TextField(null=True, blank=True)
     head_sha = models.CharField(max_length=255, null=True, blank=True)
     base_sha = models.CharField(max_length=255, null=True, blank=True)
@@ -116,10 +116,10 @@ class PullRequest(TimestampMixin):
 
 class Commit(TimestampMixin):
     repository = models.ForeignKey(Repository, related_name='commits', on_delete=models.CASCADE)
-    commit_hash = models.CharField(max_length=255) # Alembic: commit_sha
-    author_github_id = models.CharField(max_length=255, null=True, blank=True) # Alembic: commit_author_id
+    commit_hash = models.CharField(max_length=255)
+    author_github_id = models.CharField(max_length=255, null=True, blank=True)
     committer_github_id = models.CharField(max_length=255, null=True, blank=True) # Added from webhook logic
-    message = models.TextField() # Alembic: commit_message (was String(255))
+    message = models.TextField()
     url = models.CharField(max_length=255, null=True, blank=True) # Added from webhook logic
     timestamp = models.DateTimeField(null=True, blank=True) # Added from webhook logic
 
@@ -151,7 +151,7 @@ class Review(TimestampMixin):
         constraints = [
             models.CheckConstraint(
                 check=models.Q(pull_request__isnull=False) | models.Q(commit__isnull=False),
-                name='check_review_context' # Alembic: check_review_context
+                name='check_review_context'
             )
         ]
 
@@ -185,8 +185,8 @@ class Comment(TimestampMixin):
     thread = models.ForeignKey(Thread, related_name='comments', on_delete=models.CASCADE)
     user = models.ForeignKey(settings.AUTH_USER_MODEL, related_name='comments', on_delete=models.CASCADE)
     comment = models.TextField()
-    comment_data = models.JSONField(null=True, blank=True) # Alembic: comment_data (JSONB)
-    type = models.CharField(max_length=50, choices=COMMENT_TYPE_CHOICES) # Alembic: comment_type_enum
+    comment_data = models.JSONField(null=True, blank=True)
+    type = models.CharField(max_length=50, choices=COMMENT_TYPE_CHOICES)
     parent_comment = models.ForeignKey('self', related_name='replies', null=True, blank=True, on_delete=models.SET_NULL)
 
     def __str__(self):
@@ -206,7 +206,7 @@ class LLMUsage(TimestampMixin):
 class ReviewFeedback(TimestampMixin):
     review = models.ForeignKey(Review, related_name='feedbacks', on_delete=models.CASCADE)
     user = models.ForeignKey(settings.AUTH_USER_MODEL, related_name='review_feedbacks', on_delete=models.CASCADE)
-    rating = models.IntegerField(validators=[MinValueValidator(1), MaxValueValidator(5)]) # Alembic: check_rating_range
+    rating = models.IntegerField(validators=[MinValueValidator(1), MaxValueValidator(5)])
     feedback = models.TextField()
 
     def __str__(self):
@@ -229,9 +229,3 @@ class WebhookEventLog(TimestampMixin):
     def __str__(self):
         repo_name = self.repository.repo_name if self.repository else "Unknown"
         return f"Event {self.event_id} ({self.event_type}) - {repo_name} - {self.status}"
-
-# Remember to add 'core.apps.CoreConfig' to INSTALLED_APPS in django_backend/settings.py
-# Also, set AUTH_USER_MODEL = 'core.User' in django_backend/settings.py if you use this User model for authentication.
-# Then run:
-# python manage.py makemigrations core
-# python manage.py migrate

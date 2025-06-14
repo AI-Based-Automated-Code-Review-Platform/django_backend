@@ -1,0 +1,84 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:16
+    volumes:
+      - postgres_data:/var/lib/postgresql/data/
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-codeRevieww}
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "5437:5432" # Changed host port from 5434 to 5437
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:alpine
+    ports:
+      - "6380:6379" # Changed host port to 6380
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build: .
+    command: >
+      sh -c "python manage.py migrate && 
+             python manage.py runserver 0.0.0.0:8000"
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # Add this to ensure the AI User is created if it does not exist
+    # You might need to adjust the command based on your actual User model and fields
+    # command: >
+    #   sh -c "python manage.py shell -c \"from django.contrib.auth import get_user_model; User = get_user_model(); User.objects.filter(username='ai_user').exists() or User.objects.create_user(github_id='ai_user_github_id', username='ai_user', email='ai@example.com', password='securepassword123', is_ai_user=True)\" &&
+    #          python manage.py migrate && 
+    #          python manage.py runserver 0.0.0.0:8000"
+
+  celery_worker:
+    build: .
+    command: celery -A django_backend.celery_app worker --loglevel=info
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    depends_on:
+      backend:
+        condition: service_started # Or service_healthy if you add a healthcheck to backend
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+  
+  # celery_beat:
+  #   build: .
+  #   command: celery -A django_backend.celery_app beat --loglevel=info --scheduler django_celery_beat.schedulers:DatabaseScheduler
+  #   volumes:
+  #     - .:/app
+  #   env_file:
+  #     - .env
+  #   depends_on:
+  #     backend:
+  #       condition: service_started
+  #     redis:
+  #       condition: service_healthy
+  #     db:
+  #       condition: service_healthy
+
+volumes:
+  postgres_data:

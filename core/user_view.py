@@ -2,13 +2,19 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status,viewsets
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.decorators import action
 
 from .models import (
     Repository as DBRepository,
+    PullRequest,
+    Commit,
+    Review,
+    WebhookEventLog,
 )
 from .serializers import (
     UserSerializer, 
-    GitHubRepositorySerializer, GitHubOrganizationSerializer
+    GitHubRepositorySerializer, GitHubOrganizationSerializer,
+    WebhookEventLogSerializer
 )
 from .services import (
     get_user_repos_from_github,
@@ -93,18 +99,41 @@ class UserOrganizationsView(APIView):
             return Response({"detail": f"Failed to fetch organizations from GitHub: {e}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         except Exception as e:
             return Response({"detail": f"An unexpected error occurred: {e}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 # New ViewSet for User specific endpoints
-class UserViewSet(viewsets.ViewSet):
+class UserDashboardStatsView(APIView):
     """
     ViewSet for user-related operations.
     Currently, most user operations are handled by CurrentUserView, UserRepositoriesView, etc.
     This can be expanded if other user-specific, non-admin RESTful operations are needed.
     """
     permission_classes = [IsAuthenticated]
-    # Example:
-    # @action(detail=False, methods=['get'], url_path='profile-settings')
-    # def profile_settings(self, request):
-    #     user = request.user
-    #     # ... logic to get profile settings ...
-    #     return Response(...)
-    pass
+
+    def get(self, request, *args, **kwargs):
+        user = request.user
+        # Total repositories (owned or collaborated)
+        repo_ids = set(DBRepository.objects.filter(owner=user).values_list('id', flat=True))
+        collab_repo_ids = set(DBRepository.objects.filter(collaborators__user=user).values_list('id', flat=True))
+        all_repo_ids = repo_ids | collab_repo_ids
+        total_repositories = len(all_repo_ids)
+
+        # Total reviews (for repos the user owns or collaborates on)
+        total_reviews = Review.objects.filter(repository_id__in=all_repo_ids).count()
+
+        # Total pull requests (for repos the user owns or collaborates on)
+        total_pull_requests = PullRequest.objects.filter(repository_id__in=all_repo_ids).count()
+
+        # Total commits (for repos the user owns or collaborates on)
+        total_commits = Commit.objects.filter(repository_id__in=all_repo_ids).count()
+
+        # Recent webhook event logs (for repos the user owns or collaborates on)
+        recent_events = WebhookEventLog.objects.filter(repository_id__in=all_repo_ids).order_by('-created_at')[:10]
+        events_data = WebhookEventLogSerializer(recent_events, many=True).data
+
+        return Response({
+            'total_reviews': total_reviews,
+            'total_repositories': total_repositories,
+            'total_pull_requests': total_pull_requests,
+            'total_commits': total_commits,
+            'recent_activity': events_data,
+        })

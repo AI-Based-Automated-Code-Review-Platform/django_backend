@@ -13,21 +13,26 @@ https://docs.djangoproject.com/en/4.0/ref/settings/
 from pathlib import Path
 from datetime import timedelta
 import os
+from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Load environment variables from .env file
+load_dotenv(BASE_DIR / '.env')
 
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/4.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-d-wn-ct8(#yoqw1wxw4%-4q%2+ten1qzgpwqz9)$kn%&q2oglu'
+SECRET_KEY = os.getenv('SECRET_KEY', 'your-default-secret-key-if-not-set')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.getenv('DEBUG', 'True') == 'True'
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS_STRING = os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1')
+ALLOWED_HOSTS = [host.strip() for host in ALLOWED_HOSTS_STRING.split(',') if host.strip()]
 
 
 # Application definition
@@ -84,11 +89,11 @@ WSGI_APPLICATION = 'django_backend.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'codeRevieww',  # From your FastAPI config: POSTGRES_DB
-        'USER': 'postgres',     # From your FastAPI config: POSTGRES_USER
-        'PASSWORD': 'postgres', # From your FastAPI config: POSTGRES_PASSWORD
-        'HOST': 'localhost',    # From your FastAPI config: POSTGRES_SERVER
-        'PORT': '5432',         # Default PostgreSQL port
+        'NAME': os.getenv('POSTGRES_DB', 'codeRevieww'),
+        'USER': os.getenv('POSTGRES_USER', 'postgres'),
+        'PASSWORD': os.getenv('POSTGRES_PASSWORD', 'postgres'),
+        'HOST': os.getenv('POSTGRES_HOST', 'localhost'), # This will be 'db' in docker-compose
+        'PORT': os.getenv('POSTGRES_PORT', '5432'),
     }
 }
 
@@ -137,12 +142,11 @@ STATIC_URL = 'static/'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # CORS Configuration - Update with your actual origins
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:5173", # From your FastAPI config: FRONTEND_URL
-    # Add other origins from your FastAPI BACKEND_CORS_ORIGINS if any
-]
+CORS_ALLOWED_ORIGINS_STRING = os.getenv('CORS_ALLOWED_ORIGINS', 'http://localhost:5173')
+CORS_ALLOWED_ORIGINS = [origin.strip() for origin in CORS_ALLOWED_ORIGINS_STRING.split(',') if origin.strip()]
+
 # If you want to allow all origins (less secure, for development)
-# CORS_ALLOW_ALL_ORIGINS = True
+# CORS_ALLOW_ALL_ORIGINS = os.getenv('CORS_ALLOW_ALL_ORIGINS', 'False') == 'True'
 
 # Django REST framework settings
 REST_FRAMEWORK = {
@@ -152,24 +156,23 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticated', # Default to requiring authentication
     ),
-    # TODO: Configure rate limiting if needed, similar to FastAPI's AUTH_RATE_LIMIT
 }
 
 # GitHub OAuth - these will be used by your views/services
-GITHUB_CLIENT_ID = "Ov23liI7bdjnUEQpEQwJ"  # Replace with actual value or load from env
-GITHUB_CLIENT_SECRET = "6f1e13cf4d4b274465656d12ac174d65187c0272" # Replace with actual value or load from env
-GITHUB_CALLBACK_URL = "http://localhost:8000/api/v1/auth/github/callback" # Replace with actual value or load from env
-GITHUB_WEBHOOK_SECRET = "lhigjojihgfdtyuiodghj64thjki" # From your FastAPI config
-FRONTEND_URL = "http://localhost:5173" # From your FastAPI config
+GITHUB_CLIENT_ID = os.getenv('GITHUB_CLIENT_ID')
+GITHUB_CLIENT_SECRET = os.getenv('GITHUB_CLIENT_SECRET')
+GITHUB_CALLBACK_URL = os.getenv('GITHUB_CALLBACK_URL')
+GITHUB_WEBHOOK_SECRET = os.getenv('GITHUB_WEBHOOK_SECRET')
+FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:5173')
 # JWT Settings (if using django-rest-framework-simplejwt)
 SIMPLE_JWT = {
-    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=30), # From your FastAPI config: ACCESS_TOKEN_EXPIRE_MINUTES
-    "REFRESH_TOKEN_LIFETIME": timedelta(days=1),
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=int(os.getenv('ACCESS_TOKEN_LIFETIME_MINUTES', '180'))),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=int(os.getenv('REFRESH_TOKEN_LIFETIME_DAYS', '1'))),
     "ROTATE_REFRESH_TOKENS": False,
     "BLACKLIST_AFTER_ROTATION": True,
     "UPDATE_LAST_LOGIN": False,
 
-    "ALGORITHM": "HS256", # From your FastAPI config: ALGORITHM
+    "ALGORITHM": "HS256",
     "SIGNING_KEY": SECRET_KEY, # Uses Django's SECRET_KEY by default
     "VERIFYING_KEY": None,
     "AUDIENCE": None,
@@ -196,10 +199,10 @@ SIMPLE_JWT = {
 }
 
 # LLM Settings
-DEFAULT_LLM_MODEL = "CEREBRAS::llama-3.3-70b"
-DEFAULT_TEMPERATURE = 0.3
-DEFAULT_MAX_TOKENS = 32768
-DEFAULT_MAX_TOOL_CALLS = 7
+DEFAULT_LLM_MODEL = os.getenv('DEFAULT_LLM_MODEL', "CEREBRAS::llama-3.3-70b")
+DEFAULT_TEMPERATURE = float(os.getenv('DEFAULT_TEMPERATURE', '0.3'))
+DEFAULT_MAX_TOKENS = int(os.getenv('DEFAULT_MAX_TOKENS', '8192'))
+DEFAULT_MAX_TOOL_CALLS = int(os.getenv('DEFAULT_MAX_TOOL_CALLS', '7'))
 
 # LangGraph
 LANGGRAPH_API_URL = os.getenv('LANGGRAPH_API_URL', 'http://localhost:8123')
@@ -208,11 +211,11 @@ LANGSMITH_API_KEY = os.getenv('LANGSMITH_API_KEY', 'lsv2_pt_3d8d4ade48234f1b9a1e
 # LangGraph Assistant Configuration
 LANGGRAPH_REVIEW_ASSISTANT_ID = os.getenv('LANGGRAPH_REVIEW_ASSISTANT_ID', "80c5c4d8-dc67-5ab3-8734-c1e23e87e5ad")
 LANGGRAPH_FEEDBACK_ASSISTANT_ID = os.getenv('LANGGRAPH_FEEDBACK_ASSISTANT_ID', "cd380c07-d635-5f75-a268-adf7c2575a03")
-AI_USER_ID = os.getenv('AI_USER_ID', 1) # Replace 1 with the actual ID of your AI user after creation
+AI_USER_ID = int(os.getenv('AI_USER_ID', '1')) # Replace 1 with the actual ID of your AI user after creation
 
 # Celery Configuration
-CELERY_BROKER_URL = 'redis://localhost:6379/0'
-CELERY_RESULT_BACKEND = 'django-db'
+CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://localhost:6379/0') # This will be 'redis://redis:6379/0' in docker-compose
+CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'django-db')
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'

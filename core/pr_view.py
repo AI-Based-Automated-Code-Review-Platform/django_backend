@@ -65,79 +65,106 @@ class PullRequestViewSet(viewsets.ModelViewSet):
         if not CanAccessRepository().has_object_permission(request, self, db_repo):
             raise PermissionDenied("You do not have permission to access this repository.")
 
-        db_items = PRModel.objects.filter(repository=db_repo).order_by('-pr_number')
-        serialized_db_items = self.get_serializer(db_items, many=True).data
-        for item in serialized_db_items:
-            item['source'] = 'db'
-        
-        combined_items_dict = {item['pr_number']: item for item in serialized_db_items} # Use pr_number
+        page = int(request.query_params.get('page', 1))
+        per_page = int(request.query_params.get('per_page', 30))
 
+        combined_items_dict = {}
+        github_items_for_current_page = []
+
+        if page == 1:
+            db_query = PRModel.objects.filter(repository=db_repo)
+
+            db_items = db_query.order_by('-pr_number')
+            serialized_db_items = self.get_serializer(db_items, many=True).data
+            for item in serialized_db_items:
+                item['source'] = 'db'
+                combined_items_dict[item['pr_number']] = item
+        
         if not request.user.github_access_token:
             logger.warning(f"User {request.user.id} has no GitHub token. Fetching PRs from DB only for repo {db_repo.id}")
+            if page > 1: # If no GitHub token and asking for page > 1, return empty if DB items were only on page 1
+                return Response([])
+            # If page == 1 and no token, combined_items_dict (DB items) will be returned below
         else:
             try:
-                page = int(request.query_params.get('page', 1))
-                per_page = int(request.query_params.get('per_page', 30)) # Default to 30
-
                 owner_login = db_repo.owner.username
                 repo_name_only = db_repo.repo_name.split('/')[-1]
                 
+                # Pass relevant filters to the GitHub service call
                 gh_items_raw = get_repository_pull_requests_from_github(
                     github_token=request.user.github_access_token,
                     owner_login=owner_login,
                     repo_name=repo_name_only,
-                    state="all",
+                    state=request.query_params.get('status', 'all'), # Pass status filter
                     per_page=per_page,
                     page=page
+                    # Add other filters like sort, direction if needed by the service
                 )
                 
                 for gh_pr in gh_items_raw:
-                    # Use gh_pr['number'] as the key for matching
-                    if gh_pr['number'] not in combined_items_dict:
-                        user_data = gh_pr.get('user', {})
-                        head_data = gh_pr.get('head', {})
-                        base_data = gh_pr.get('base', {})
-                        transformed_gh_item = {
-                            'pr_github_id': gh_pr.get('id'),
-                            'pr_number': gh_pr.get('number'),
-                            'title': gh_pr.get('title'),
-                            'body': gh_pr.get('body'),
-                            'user_login': user_data.get('login'),
-                            'user_avatar_url': user_data.get('avatar_url'),
-                            'url': gh_pr.get('html_url'),
-                            'created_at_gh': gh_pr.get('created_at'),
-                            'updated_at_gh': gh_pr.get('updated_at'),
-                            'closed_at_gh': gh_pr.get('closed_at'),
-                            'merged_at_gh': gh_pr.get('merged_at'),
-                            'source': 'github',
-                            'id': None,
-                            'repository_id': db_repo.id, 
-                            'created_at': None, 
-                            'updated_at': None,
+                    # Post-fetch filtering for author and date if not supported directly by API endpoint
+                    # Example: author_filter_val = request.query_params.get('author')
+                    # if author_filter_val and gh_pr.get('user', {}).get('login', '').lower() != author_filter_val.lower():
+                    #     continue
+                    # (Similar for date_from/date_to if not passed to API)
 
-                            # Align with model fields
-                            'author_github_id': str(user_data.get('id')) if user_data else None,
-                            'status': gh_pr.get('state'),
-                            'head_sha': head_data.get('sha'),
-                            'base_sha': base_data.get('sha'),
-                        }
-                        # Similar to commits, using serializer for consistency if possible
-                        serialized_gh_pr = self.get_serializer(data=transformed_gh_item)
-                        if serialized_gh_pr.is_valid():
-                            combined_items_dict[gh_pr['number']] = serialized_gh_pr.data
+                    user_data = gh_pr.get('user', {})
+                    head_data = gh_pr.get('head', {})
+                    base_data = gh_pr.get('base', {})
+                    transformed_gh_item = {
+                        'pr_github_id': gh_pr.get('id'),
+                        'pr_number': gh_pr.get('number'),
+                        'title': gh_pr.get('title'),
+                        'body': gh_pr.get('body'),
+                        'user_login': user_data.get('login'),
+                        'user_avatar_url': user_data.get('avatar_url'),
+                        'url': gh_pr.get('html_url'),
+                        'created_at_gh': gh_pr.get('created_at'),
+                        'updated_at_gh': gh_pr.get('updated_at'),
+                        'closed_at_gh': gh_pr.get('closed_at'),
+                        'merged_at_gh': gh_pr.get('merged_at'),
+                        'source': 'github',
+                        'id': None, # Will be None for pure GitHub items not yet in DB
+                        'repository_id': db_repo.id, 
+                        'created_at': None, 
+                        'updated_at': None,
+                        'author_github_id': str(user_data.get('id')) if user_data else None,
+                        'status': gh_pr.get('state'),
+                        'head_sha': head_data.get('sha'),
+                        'base_sha': base_data.get('sha'),
+                    }
+                    
+                    serialized_gh_pr = self.get_serializer(data=transformed_gh_item)
+                    if serialized_gh_pr.is_valid():
+                        valid_data = serialized_gh_pr.data
+                        if page == 1:
+                            # Add to combined_items_dict only if not already present from DB
+                            if valid_data['pr_number'] not in combined_items_dict:
+                                combined_items_dict[valid_data['pr_number']] = valid_data
                         else:
-                            logger.error(f"GitHub PR data for #{gh_pr['number']} not valid for serializer: {serialized_gh_pr.errors}")
-                            transformed_gh_item['repository_id'] = db_repo.id # Add repository_id for context
-                            combined_items_dict[gh_pr['number']] = transformed_gh_item
-
+                            # For page > 1, add directly to the list for this page's results
+                            github_items_for_current_page.append(valid_data)
+                    else:
+                        logger.error(f"GitHub PR data for #{gh_pr['number']} not valid for serializer: {serialized_gh_pr.errors}")
+                        # Handle non-serializable data if necessary, e.g., by adding raw transformed item
+                        transformed_gh_item['repository_id'] = db_repo.id
+                        if page == 1:
+                            if transformed_gh_item['pr_number'] not in combined_items_dict:
+                                combined_items_dict[transformed_gh_item['pr_number']] = transformed_gh_item
+                        else:
+                            github_items_for_current_page.append(transformed_gh_item)
 
             except requests.exceptions.RequestException as e:
                 logger.error(f"GitHub API error while fetching PRs for repo {db_repo.id}: {e}")
             except Exception as e:
                 logger.error(f"Unexpected error while fetching GitHub PRs for repo {db_repo.id}: {e}")
 
-        final_list = list(combined_items_dict.values())
-        # final_list.sort(key=lambda x: x.get('number'), reverse=True)
+        if page == 1:
+            final_list = list(combined_items_dict.values())
+        else:
+            final_list = github_items_for_current_page
+        
+        final_list.sort(key=lambda x: x.get('pr_number'), reverse=True) # Ensure consistent sorting if needed
         return Response(final_list)
 
     @action(detail=False, methods=['post'], url_path='trigger-review') # MODIFIED

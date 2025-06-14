@@ -182,10 +182,6 @@ class RepositoryViewSet(viewsets.ModelViewSet):
         serializer = RepoCollaboratorSerializer(collaborators, many=True)
         return Response(serializer.data)
 
-    # The get_repository_by_github_id from FastAPI is slightly different from DRF's default retrieve.
-    # We can add it as a list route action or a separate view if preferred.
-    # For now, let's assume client will use /api/v1/repositories/{id}/ (PK) or filter list view.
-    # If a dedicated /repositories/by-github-id/{github_id} is needed:
     @action(detail=False, methods=['get'], url_path='by-github-id/(?P<github_id>[0-9]+)')
     def by_github_id(self, request, github_id=None):
          repository = get_object_or_404(DBRepository, github_native_id=github_id)
