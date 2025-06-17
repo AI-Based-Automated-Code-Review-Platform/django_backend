@@ -8,6 +8,9 @@ import asyncio
 from ..models import Review, Repository, PullRequest, LLMUsage, User, Commit, Thread
 from core.langgraph_client.client import LangGraphClient
 from core.services import GitHubService
+from channels.layers import get_channel_layer
+from asgiref.sync import async_to_sync
+from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
@@ -186,6 +189,26 @@ def process_pr_review(self, event_data: Dict[str, Any], repository_id: int, pr_m
         allowed_review_keys = ["repo", "user", "fixes", "metrics", "reviews", "llm_model", "standards",'final_result']
         filtered_review_data = {key: raw_review_data[key] for key in allowed_review_keys if key in raw_review_data}
         
+        # Preserve workspace information in the review record for filtering
+        if 'workspace_path' in event_data:
+            filtered_review_data['workspace_path'] = event_data['workspace_path']
+        if 'repository_name' in event_data:
+            filtered_review_data['repository_name'] = event_data['repository_name']
+        if 'git_remote_url' in event_data:
+            filtered_review_data['git_remote_url'] = event_data['git_remote_url']
+        if 'git_branch' in event_data:
+            filtered_review_data['git_branch'] = event_data['git_branch']
+        if 'is_git_repo' in event_data:
+            filtered_review_data['is_git_repo'] = event_data['is_git_repo']
+        if 'files_count' in event_data:
+            filtered_review_data['files_count'] = len(event_data.get('files', {}))
+        if 'total_size_bytes' in event_data:
+            total_size = sum(len(str(content).encode('utf-8')) for content in event_data.get('files', {}).values())
+            filtered_review_data['total_size_bytes'] = total_size
+        
+        # Add review timestamp
+        filtered_review_data['review_timestamp'] = timezone.now().isoformat()
+        
         review.review_data = filtered_review_data
         review.status = 'completed'
         review.save()
@@ -269,6 +292,7 @@ def process_pr_review(self, event_data: Dict[str, Any], repository_id: int, pr_m
         # Ensure the loop is closed
         loop.close()
         asyncio.set_event_loop(None) # Clear the event loop for the current thread
+        
 @shared_task(bind=True)
 def process_commit_review(self, event_data: Dict[str, Any], repository_id: int, commit_model_id: int) -> None:
     """
@@ -471,3 +495,248 @@ def calculate_cost(token_usage: Dict[str, int], model: str) -> float:
     output_cost = output_tokens * output_cost_per_token
     
     return round(input_cost + output_cost, 6) 
+
+@shared_task(bind=True)
+def process_vscode_review_task(self, review_id, review_data):
+    """
+    Process VS Code review asynchronously with real-time updates.
+    
+    Args:
+        review_id: ID of the review record
+        review_data: Dictionary containing review parameters
+    """
+    channel_layer = get_channel_layer()
+    review = None
+    
+    # Create a new event loop for this task execution (same as PR/commit reviews)
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    try:
+        # Get the review record
+        review = Review.objects.get(id=review_id)
+        user = review.created_by
+        
+        logger.info(f"Processing VS Code review {review_id} for user {user.username}")
+        
+        # Send progress update
+        if channel_layer:
+            async_to_sync(channel_layer.group_send)(
+                f'user_{user.github_id}',
+                {
+                    'type': 'review_status_update',
+                    'review_id': str(review_id),
+                    'status': 'processing',
+                    'progress': 25
+                }
+            )
+        
+        # Initialize LangGraph client (same as PR/commit reviews)
+        client = LangGraphClient()
+        loop.run_until_complete(client.initialize())
+        
+        if not client.review_agent:
+            logger.error("PROCESS_VSCODE_REVIEW_TASK: LangGraph review agent not available after initialization.")
+            raise Exception("LangGraph review agent not available.")
+        
+        # Send progress update
+        if channel_layer:
+            async_to_sync(channel_layer.group_send)(
+                f'user_{user.github_id}',
+                {
+                    'type': 'review_status_update',
+                    'review_id': str(review_id),
+                    'status': 'processing',
+                    'progress': 50
+                }
+            )
+        
+        # Prepare VS Code review data for LangGraph (similar to PR/commit format)
+        vscode_review_data = {
+            'files': review_data.get('files', {}),
+            'diff_str': review_data.get('diff_str', ''),
+            'review_type': 'vscode',
+            'review_id': str(review_id),  # Add review_id that the agent expects
+            'user_id': str(user.github_id),  # Add user_id that the agent expects
+            'user': {'login': user.username, 'id': user.github_id},
+            'repository': {'full_name': 'vscode-extension/review'},  # Placeholder for VS Code reviews
+            # Add additional fields that the LangGraph agent expects
+            'temperature': max(0.0, min(1.0, float(review_data.get('temperature', 0.3)))),
+            'max_tokens': max(1, min(100000, int(review_data.get('max_tokens', 32768)))),
+            'max_tool_calls': max(1, min(20, int(review_data.get('max_tool_calls', 7)))),
+            'user_github_token': user.github_access_token if hasattr(user, 'github_access_token') else None,
+        }
+        
+        # Prepare repo settings (similar to PR/commit reviews)
+        repo_settings = {
+            'coding_standards': review_data.get('standards', []),
+            'code_metrics': review_data.get('metrics', []),
+            'llm_preference': review_data.get('llm_model', settings.DEFAULT_LLM_MODEL if hasattr(settings, 'DEFAULT_LLM_MODEL') else 'CEREBRAS::llama-3.3-70b'),
+            'temperature': max(0.0, min(1.0, float(review_data.get('temperature', 0.3)))),
+            'max_tokens': max(1, min(100000, int(review_data.get('max_tokens', 32768)))),
+            'max_tool_calls': max(1, min(20, int(review_data.get('max_tool_calls', 7)))),
+        }
+        
+        logger.info(f"PROCESS_VSCODE_REVIEW_TASK: Calling LangGraph to generate review for review ID {review_id}")
+        
+        # Process the review using LangGraph client (same as PR/commit reviews)
+        review_result = loop.run_until_complete(client.generate_review(
+            pr_data=vscode_review_data,
+            repo_settings=repo_settings,
+            user_id=str(user.github_id)
+        ))
+        
+        logger.info(f"PROCESS_VSCODE_REVIEW_TASK: LangGraph review generated for review ID {review_id}")
+        
+        # Send progress update
+        if channel_layer:
+            async_to_sync(channel_layer.group_send)(
+                f'user_{user.github_id}',
+                {
+                    'type': 'review_status_update',
+                    'review_id': str(review_id),
+                    'status': 'processing',
+                    'progress': 75
+                }
+            )
+        
+        # Update review with results (same as PR/commit reviews)
+        raw_review_data = review_result.get('review_data', {})
+        allowed_review_keys = ["repo", "user", "fixes", "metrics", "reviews", "llm_model", "standards", 'final_result']
+        filtered_review_data = {key: raw_review_data[key] for key in allowed_review_keys if key in raw_review_data}
+        
+        # Preserve workspace information in the review record for filtering
+        if 'workspace_path' in review_data:
+            print(review_data['workspace_path'])
+            filtered_review_data['workspace_path'] = review_data['workspace_path']
+        if 'repository_name' in review_data:
+            print(review_data['repository_name'])
+            filtered_review_data['repository_name'] = review_data['repository_name']
+        if 'git_remote_url' in review_data:
+            print(review_data['git_remote_url'])
+            filtered_review_data['git_remote_url'] = review_data['git_remote_url']
+        if 'git_branch' in review_data:
+            print(review_data['git_branch'])
+            filtered_review_data['git_branch'] = review_data['git_branch']
+        if 'is_git_repo' in review_data:
+            print(review_data['is_git_repo'])
+            filtered_review_data['is_git_repo'] = review_data['is_git_repo']
+        if 'files_count' in review_data:
+            print(review_data['files_count'])
+            filtered_review_data['files_count'] = len(review_data.get('files', {}))
+        if 'total_size_bytes' in review_data:
+            print(review_data['total_size_bytes'])
+            total_size = sum(len(str(content).encode('utf-8')) for content in review_data.get('files', {}).values())
+            filtered_review_data['total_size_bytes'] = total_size
+        
+        # Add review timestamp
+        filtered_review_data['review_timestamp'] = timezone.now().isoformat()
+        
+        review.review_data = filtered_review_data
+        review.status = 'completed'
+        review.thread_id = review_result.get('thread_id')
+        review.save()
+        
+        # Create a main thread for this review (same as PR/commit reviews)
+        thread_id = review_result.get('thread_id')
+        if thread_id:
+            Thread.objects.create(
+                review=review,
+                thread_id=thread_id,
+                thread_type='main',
+                title='Initial VS Code AI Review',
+                status='open'
+            )
+            logger.info(f"PROCESS_VSCODE_REVIEW_TASK: Created main thread for review {review_id}")
+        
+        # Record LLM usage (same as PR/commit reviews)
+        token_usage_data = review_result.get('token_usage', {})
+        if token_usage_data:
+            LLMUsage.objects.create(
+                review=review,
+                user=user,
+                llm_model=repo_settings['llm_preference'],
+                input_tokens=token_usage_data.get('input_tokens', token_usage_data.get('prompt_tokens', 0)),
+                output_tokens=token_usage_data.get('output_tokens', token_usage_data.get('completion_tokens', 0)),
+                cost=calculate_cost(token_usage_data, repo_settings['llm_preference'])
+            )
+            logger.info(f"PROCESS_VSCODE_REVIEW_TASK: LLM usage recorded for review {review_id} by user {user.username}.")
+        
+        # Send completion notification
+        if channel_layer:
+            async_to_sync(channel_layer.group_send)(
+                f'user_{user.github_id}',
+                {
+                    'type': 'review_status_update',
+                    'review_id': str(review_id),
+                    'status': 'completed',
+                    'progress': 100
+                }
+            )
+            
+            # Send detailed completion data
+            async_to_sync(channel_layer.group_send)(
+                f'review_{review_id}',
+                {
+                    'type': 'review_completed',
+                    'review_data': filtered_review_data,
+                    'token_usage': token_usage_data,
+                    'thread_id': thread_id
+                }
+            )
+        
+        logger.info(f"VS Code review {review_id} completed successfully")
+        
+        return {
+            'status': 'completed',
+            'review_id': review_id,
+            'review_data': filtered_review_data,
+            'token_usage': token_usage_data
+        }
+        
+    except Review.DoesNotExist:
+        error_msg = f"Review {review_id} not found"
+        logger.error(error_msg)
+        return {'status': 'error', 'message': error_msg}
+        
+    except Exception as e:
+        task_id = self.request.id if self.request else "N/A"
+        error_msg = f"VS Code review {review_id} failed: {str(e)}"
+        logger.error(f"PROCESS_VSCODE_REVIEW_TASK: Unhandled error in task {task_id} for Review ID {review_id}: {str(e)}", exc_info=True)
+        
+        try:
+            # Update review status to failed
+            if review:
+                review.status = 'failed'
+                review.error_message = str(e)[:1023]
+                review.save(update_fields=['status', 'error_message'])
+            
+            # Send error notification
+            if channel_layer and review:
+                async_to_sync(channel_layer.group_send)(
+                    f'user_{review.created_by.github_id}',
+                    {
+                        'type': 'review_status_update',
+                        'review_id': str(review_id),
+                        'status': 'failed',
+                        'progress': 0
+                    }
+                )
+                
+                async_to_sync(channel_layer.group_send)(
+                    f'review_{review_id}',
+                    {
+                        'type': 'review_error',
+                        'error': str(e),
+                        'message': 'Review processing failed'
+                    }
+                )
+        except Exception as update_error:
+            logger.error(f"Failed to update review status: {str(update_error)}")
+        
+        return {'status': 'error', 'message': error_msg}
+        
+    finally:
+        # Ensure the loop is closed (same as PR/commit reviews)
+        loop.close()
+        asyncio.set_event_loop(None)

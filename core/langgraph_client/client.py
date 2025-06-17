@@ -1,5 +1,6 @@
 import logging
 import time
+import json
 from typing import Dict, Any, Optional
 from django.conf import settings
 from langgraph_sdk import get_client
@@ -61,22 +62,37 @@ class LangGraphClient:
             # Create a new thread for the review
             thread = await self.client.threads.create()
             
-            # Determine if this is a PR or commit review
+            # Determine review type
             is_commit_review = 'commit' in pr_data and pr_data.get('commit') and isinstance(pr_data.get('commit'), dict)
-            
+            is_vscode_review = pr_data.get('review_type') == 'vscode' or ('diff_str' in pr_data and 'files' in pr_data)
             # Prepare input data for the review
             input_data = {
                 "llm_model": repo_settings.get('llm_preference', 'CEREBRAS::llama-3.3-70b'),
                 "standards": repo_settings.get('coding_standards', []),
                 "metrics": repo_settings.get('code_metrics', []),
-                "temperature": 0.3,
-                "max_tokens": 32768,
-                "max_tool_calls": 7,
+                "temperature": repo_settings.get('temperature', 0.3),
+                "max_tokens": repo_settings.get('max_tokens', 32768),
+                "max_tool_calls": repo_settings.get('max_tool_calls', 7),
                 "user_github_token": github_token
             }
             
+            # Handle VS Code review
+            if is_vscode_review:
+                # VS Code reviews have diff_str and files data
+                input_data.update({
+                    "files": json.dumps(pr_data.get('files', {})) if isinstance(pr_data.get('files'), dict) else pr_data.get('files', '{}'),
+                    "diff_str": pr_data.get('diff_str', ''),
+                    "user_id": user_id,
+                    "review_id": pr_data.get('review_id', ''),
+                    "action": "vscode_review",
+                    # For VS Code reviews, we don't have traditional repo/PR structure
+                    "user": pr_data.get('user', {}).get('login', ''),
+                    "repo": pr_data.get('repository', {}).get('full_name', '').split('/')[-1] if pr_data.get('repository', {}).get('full_name') else 'vscode-review',
+                    "pr_id": "",  # Empty for VS Code reviews
+                    "commit_hash": "",  # Empty for VS Code reviews
+                })
             # Handle PR review
-            if not is_commit_review and 'base' in pr_data:
+            elif not is_commit_review and 'base' in pr_data:
                 input_data.update({
                     "user": pr_data.get('user', {}).get('login', ''),
                     "repo": pr_data.get('base', {}).get('repo', {}).get('name', ''),
@@ -97,8 +113,8 @@ class LangGraphClient:
                     commit_hash = pr_data.get('commit_sha', '')
                     
                 input_data.update({
-                    "user": repo_name.split('/')[0],
-                    "repo": repo_name.split('/')[1],
+                    "user": repo_name.split('/')[0] if repo_name else '',
+                    "repo": repo_name.split('/')[1] if '/' in repo_name else repo_name,
                     "pr_id": "",  # Empty for commit reviews
                     "commit_hash": commit_hash,
                 })

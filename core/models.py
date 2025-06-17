@@ -138,20 +138,36 @@ class Review(TimestampMixin):
         ('processing', 'Processing'), # Added from webhook logic
         ('pending_analysis', 'Pending Analysis') # Added from webhook logic
     ]
-    repository = models.ForeignKey(Repository, related_name='reviews', on_delete=models.CASCADE)
+    
+    REVIEW_TYPE_CHOICES = [
+        ('pr', 'Pull Request'),
+        ('commit', 'Commit'),
+        ('vscode', 'VS Code Extension'),
+        ('manual', 'Manual Review'),
+    ]
+    
+    repository = models.ForeignKey(Repository, related_name='reviews', on_delete=models.CASCADE, null=True, blank=True)
     pull_request = models.ForeignKey(PullRequest, related_name='reviews', on_delete=models.CASCADE, null=True, blank=True)
     commit = models.ForeignKey(Commit, related_name='reviews', on_delete=models.CASCADE, null=True, blank=True)
     parent_review = models.ForeignKey('self', related_name='re_reviews', on_delete=models.SET_NULL, null=True, blank=True)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, related_name='created_reviews', on_delete=models.SET_NULL, null=True, blank=True)
     status = models.CharField(max_length=20, choices=REVIEW_STATUS_CHOICES, default='pending')
+    review_type = models.CharField(max_length=20, choices=REVIEW_TYPE_CHOICES, default='pr')
     review_data = models.JSONField(null=True, blank=True)
     error_message = models.TextField(null=True, blank=True) # New field for storing error messages
+    thread_id = models.CharField(max_length=255, null=True, blank=True, help_text="LangGraph thread ID for this review")
     # user = models.ForeignKey(User, related_name='reviews', on_delete=models.CASCADE) # Consider who owns/requested the review
 
     class Meta:
         constraints = [
             models.CheckConstraint(
-                check=models.Q(pull_request__isnull=False) | models.Q(commit__isnull=False),
-                name='check_review_context'
+                check=(
+                    models.Q(pull_request__isnull=False) | 
+                    models.Q(commit__isnull=False) | 
+                    models.Q(review_type='vscode') |
+                    models.Q(review_type='manual')
+                ),
+                name='check_review_context' # Alembic: check_review_context
             )
         ]
 
@@ -160,6 +176,8 @@ class Review(TimestampMixin):
             return f"Review for PR #{self.pull_request.pr_number}"
         elif self.commit:
             return f"Review for Commit {self.commit.commit_hash[:7]}"
+        elif self.review_type == 'vscode':
+            return f"VS Code Review {self.id}"
         return f"Review {self.id}"
 
 class Thread(TimestampMixin):

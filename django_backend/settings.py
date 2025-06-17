@@ -38,15 +38,18 @@ ALLOWED_HOSTS = [host.strip() for host in ALLOWED_HOSTS_STRING.split(',') if hos
 # Application definition
 
 INSTALLED_APPS = [
+    'daphne',  # Add this at the top for WebSocket support
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'rest_framework',
+    'rest_framework_simplejwt',
+    'corsheaders',
+    'channels',  # Add Django Channels
     'core.apps.CoreConfig',
-    'rest_framework',  # Add this line
-    'corsheaders',     # Add this line
     'django_celery_results',
     'django_celery_beat',
 ]
@@ -221,9 +224,14 @@ CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE
 
-# It's highly recommended to load sensitive keys and environment-specific settings
-# from environment variables rather than hardcoding them.
-# For example, using something like python-decouple or os.environ.get()
-# SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'your-default-secret-key-if-not-set')
-# GITHUB_CLIENT_ID = os.environ.get('GITHUB_CLIENT_ID')
-# etc.
+# WebSocket/Channels Configuration
+ASGI_APPLICATION = 'django_backend.asgi.application'
+
+CHANNEL_LAYERS = {
+    'default': {
+        'BACKEND': 'channels_redis.core.RedisChannelLayer',
+        'CONFIG': {
+            "hosts": [('redis://redis:6379')],
+        },
+    },
+}

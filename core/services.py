@@ -5,6 +5,12 @@ import urllib.parse
 import aiohttp
 import hmac
 import hashlib
+import logging
+import requests
+import json
+
+# Create a logger instance
+logger = logging.getLogger(__name__)
 
 GITHUB_OAUTH_AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
 GITHUB_OAUTH_TOKEN_URL = "https://github.com/login/oauth/access_token"
@@ -211,18 +217,202 @@ class LangGraphService:
 
     def initialize_review(self, user_github_id, repo_name, pr_number, standards=None, metrics=None, llm_model=None):
         """Initialize a review thread in LangGraph."""
-        # TODO: Implement actual API call to LangGraph service
-        raise NotImplementedError("initialize_review method not implemented")
+        try:
+            import requests
+            import json
+            
+            # Validate LLM model
+            valid_models = [
+                'CEREBRAS::llama-3.3-70b',
+                'HYPERBOLIC::meta-llama/Llama-3.3-70B-Instruct'
+            ]
+            
+            if llm_model and llm_model not in valid_models:
+                raise ValueError(f"Invalid LLM model. Valid models are: {', '.join(valid_models)}")
+            
+            payload = {
+                'user_github_id': user_github_id,
+                'repository_name': repo_name,
+                'pr_number': pr_number,
+                'llm_model': llm_model or 'CEREBRAS::llama-3.3-70b',
+                'standards': standards or [],
+                'metrics': metrics or [],
+                'action': 'initialize_review'
+            }
+            
+            response = requests.post(
+                f"{self.base_url}/api/v1/reviews/initialize",
+                json=payload,
+                headers={'Content-Type': 'application/json'},
+                timeout=60
+            )
+            response.raise_for_status()
+            return response.json()
+            
+        except Exception as e:
+            logger.error(f"Error initializing review: {str(e)}")
+            raise Exception(f"Failed to initialize review: {str(e)}")
 
     def get_thread_state(self, thread_id):
         """Get the current state of a LangGraph thread."""
-        # TODO: Implement actual API call to LangGraph service
-        raise NotImplementedError("get_thread_state method not implemented")
+        try:
+            import requests
+            
+            response = requests.get(
+                f"{self.base_url}/api/v1/threads/{thread_id}/state",
+                headers={'Content-Type': 'application/json'},
+                timeout=30
+            )
+            response.raise_for_status()
+            return response.json()
+            
+        except Exception as e:
+            logger.error(f"Error getting thread state: {str(e)}")
+            raise Exception(f"Failed to get thread state: {str(e)}")
 
     def get_review_feedback(self, thread_id, user_feedback, original_review, reviewer_id, user, repo, pr_id):
         """Submit user feedback to LangGraph and get AI response."""
-        # TODO: Implement actual API call to LangGraph service
-        raise NotImplementedError("get_review_feedback method not implemented")
+        try:
+            import requests
+            import json
+            
+            payload = {
+                'thread_id': thread_id,
+                'user_feedback': user_feedback,
+                'original_review': original_review,
+                'reviewer_id': reviewer_id,
+                'user_info': {
+                    'id': user.id if hasattr(user, 'id') else user,
+                    'github_id': user.github_id if hasattr(user, 'github_id') else None
+                },
+                'repository_info': {
+                    'name': repo.repo_name if hasattr(repo, 'repo_name') else repo,
+                    'owner': repo.owner.username if hasattr(repo, 'owner') and hasattr(repo.owner, 'username') else None
+                },
+                'pr_id': pr_id,
+                'action': 'handle_feedback'
+            }
+            
+            response = requests.post(
+                f"{self.base_url}/api/v1/reviews/feedback",
+                json=payload,
+                headers={'Content-Type': 'application/json'},
+                timeout=120
+            )
+            response.raise_for_status()
+            return response.json()
+            
+        except Exception as e:
+            logger.error(f"Error processing feedback: {str(e)}")
+            raise Exception(f"Failed to process feedback: {str(e)}")
+
+    def process_vscode_review(self, review_data):
+        """
+        Process a VS Code review request using LangGraph.
+        
+        Args:
+            review_data (dict): Dictionary containing:
+                - files: Dictionary of file paths and contents
+                - diff_str: Git diff string
+                - llm_model: LLM model to use
+                - standards: List of coding standards
+                - metrics: List of metrics to evaluate
+                - temperature: LLM temperature
+                - max_tokens: Maximum tokens
+                - max_tool_calls: Maximum tool calls
+                - user_github_token: User's GitHub token
+                - review_id: Review ID
+                - user_id: User ID
+        
+        Returns:
+            dict: Review results containing review_data, token_usage, and thread_id
+        """
+        try:
+            
+            # Validate LLM model
+            valid_models = [
+                'CEREBRAS::llama-3.3-70b',
+                'HYPERBOLIC::meta-llama/Llama-3.3-70B-Instruct'
+            ]
+            
+            llm_model = review_data.get('llm_model', 'CEREBRAS::llama-3.3-70b')
+            if llm_model not in valid_models:
+                logger.warning(f"Invalid LLM model '{llm_model}', using default")
+                llm_model = 'CEREBRAS::llama-3.3-70b'
+            
+            # Prepare the payload for LangGraph
+            payload = {
+                'files': json.dumps(review_data['files']) if isinstance(review_data['files'], dict) else review_data['files'],
+                'diff_str': review_data.get('diff_str', ''),
+                'llm_model': llm_model,
+                'standards': review_data.get('standards', []),
+                'metrics': review_data.get('metrics', []),
+                'temperature': max(0.0, min(1.0, float(review_data.get('temperature', 0.3)))),  # Clamp between 0-1
+                'max_tokens': max(1, min(100000, int(review_data.get('max_tokens', 32768)))),    # Reasonable limits
+                'max_tool_calls': max(1, min(20, int(review_data.get('max_tool_calls', 7)))),   # Reasonable limits
+                'user_github_token': review_data.get('user_github_token'),
+                'review_id': review_data.get('review_id'),
+                'user_id': review_data.get('user_id'),
+                'action': 'vscode_review'
+            }
+            
+            # Make request to LangGraph service
+            logger.info(f"Submitting VS Code review to LangGraph: review_id={payload['review_id']}")
+            
+            response = requests.post(
+                f"{self.base_url}/api/v1/reviews/vscode",
+                json=payload,
+                headers={'Content-Type': 'application/json'},
+                timeout=300  # 5 minute timeout for reviews
+            )
+            response.raise_for_status()
+            
+            result = response.json()
+            logger.info(f"LangGraph VS Code review completed: review_id={payload['review_id']}")
+            
+            return result
+            
+        except requests.exceptions.Timeout:
+            logger.error(f"LangGraph request timeout for review {review_data.get('review_id')}")
+            raise Exception("Review processing timeout. Please try again.")
+        except requests.exceptions.ConnectionError:
+            logger.error(f"Cannot connect to LangGraph service at {self.base_url}")
+            raise Exception("Cannot connect to review service. Please check if the service is running.")
+        except requests.exceptions.HTTPError as e:
+            logger.error(f"LangGraph HTTP error: {e.response.status_code} - {e.response.text}")
+            raise Exception(f"Review service error: {e.response.status_code}")
+        except Exception as e:
+            logger.error(f"Error processing VS Code review: {str(e)}")
+            raise Exception(f"Failed to process VS Code review: {str(e)}")
+
+    def handle_feedback(self, review_id, feedback, thread_id, user_id):
+        """Handle user feedback for a review."""
+        try:
+            import requests
+            
+            payload = {
+                'review_id': review_id,
+                'feedback': feedback,
+                'thread_id': thread_id,
+                'user_id': user_id,
+                'action': 'handle_feedback'
+            }
+            
+            response = requests.post(
+                f"{self.base_url}/api/v1/reviews/feedback",
+                json=payload,
+                headers={'Content-Type': 'application/json'},
+                timeout=60
+            )
+            response.raise_for_status()
+            return response.json()
+            
+        except Exception as e:
+            logger.error(f"Error handling feedback: {str(e)}")
+            return {
+                'feedback_data': f'Error processing feedback: {str(e)}',
+                'token_usage': {'input_tokens': 0, 'output_tokens': 0, 'cost': 0.0}
+            }
 
 class GitHubService:
     """Service class for interacting with the GitHub API."""

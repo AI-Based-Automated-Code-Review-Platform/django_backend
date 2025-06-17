@@ -4,7 +4,7 @@ from .models import User, Repository as DBRepository, RepoCollaborator, PullRequ
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ['id', 'username', 'email', 'is_admin', 'github_id', 'created_at', 'updated_at']
+        fields = ['id', 'username', 'email', 'is_admin', 'github_id', 'avatar_url', 'created_at', 'updated_at']
         read_only_fields = ['id', 'github_id', 'created_at', 'updated_at']
 
 class RepositorySerializer(serializers.ModelSerializer):

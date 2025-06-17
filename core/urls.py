@@ -1,6 +1,6 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .auth_view import GitHubLoginView, GitHubCallbackView, GitHubExchangeAuthTokenView, GitHubLoginRedirectView
+from .auth_view import GitHubLoginView, GitHubCallbackView, GitHubExchangeAuthTokenView, GitHubLoginRedirectView, GitHubVSCodeLoginView
 from .admin_view import AdminStatsView, AdminUserListView, AdminUserUpdateView
 from .webhook_view import github_webhook
 from .user_view import CurrentUserView, UserDashboardStatsView, UserRepositoriesView, UserOrganizationsView
@@ -25,6 +25,7 @@ router.register(r'threads', ThreadViewSet, basename='thread')
 urlpatterns = [
     # Auth endpoints
     path('auth/github/login/', GitHubLoginView.as_view(), name='github_login'),
+    path('auth/github/vscode-login/', GitHubVSCodeLoginView.as_view(), name='github_vscode_login'),
     path('auth/github/callback/', GitHubCallbackView.as_view(), name='github_callback'),
     # path('auth/github/', views.GitHubDirectAuthView.as_view(), name='github_direct_auth'), # This was commented out, ensure it's needed or remove
     path('auth/github/exchange/', GitHubExchangeAuthTokenView.as_view(), name='github_exchange_token'), # Added for explicit token exchange

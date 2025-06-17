@@ -3,7 +3,8 @@ from .models import (
     User, Repository, RepoCollaborator, PullRequest, Commit, 
     Review, Thread, Comment, LLMUsage, ReviewFeedback, WebhookEventLog
 )
-
+import json
+from django.utils.html import format_html
 # Register your models here.
 
 @admin.register(User)
@@ -141,8 +142,6 @@ class WebhookEventLogAdmin(admin.ModelAdmin):
     error_message_short.short_description = 'Error Message'
 
     def payload_pretty(self, instance):
-        import json
-        from django.utils.html import format_html
         if instance.payload:
             return format_html("<pre>{}</pre>", json.dumps(instance.payload, indent=2))
         return None

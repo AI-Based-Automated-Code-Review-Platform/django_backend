@@ -2,6 +2,10 @@ from rest_framework.response import Response
 from rest_framework import status, viewsets
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import action
+import json
+from django.utils import timezone
+from channels.layers import get_channel_layer
+from asgiref.sync import async_to_sync
 
 from .tasks.review_tasks import process_pr_review
 from .models import (
@@ -77,9 +81,11 @@ class ReviewViewSet(viewsets.ModelViewSet):
         return Response(cleaned_response_data)
     
     def get_queryset(self):
+        # Include both repository-based reviews and VS Code reviews (repository=None)
         return ReviewModel.objects.filter(
             Q(repository__owner=self.request.user) |
-            Q(repository__collaborators__user=self.request.user)
+            Q(repository__collaborators__user=self.request.user) |
+            Q(repository__isnull=True, created_by=self.request.user)  # VS Code reviews
         ).distinct()
 
     def retrieve(self, request, *args, **kwargs):
@@ -98,7 +104,17 @@ class ReviewViewSet(viewsets.ModelViewSet):
         else:
             # Optionally, ensure 'threads' key is present even if empty
             data['threads'] = []
-        # print(data)
+            
+        # For VS Code reviews, ensure we have the workspace info in the response
+        if instance.review_type == 'vscode' and instance.review_data:
+            data['workspace_info'] = {
+                'workspace_path': instance.review_data.get('workspace_path'),
+                'repository_name': instance.review_data.get('repository_name'),
+                'files_count': instance.review_data.get('files_count', 0),
+                'llm_model': instance.review_data.get('llm_model'),
+                'is_git_repo': instance.review_data.get('is_git_repo', False)
+            }
+            
         return Response(data)
     # this feedback endpoint is not gonna be used anywhere, it's just a placeholder
     @action(detail=True, methods=['post'])
@@ -275,3 +291,253 @@ class ReviewViewSet(viewsets.ModelViewSet):
             "review_id": review.id,
             "rating": rating
         })
+    @action(detail=False, methods=['post'], url_path='vscode-review', permission_classes=[IsAuthenticated])
+    def vscode_review(self, request):
+        """
+        VS Code extension endpoint for direct code review.
+        Accepts files and diff data directly from the extension.
+        Supports real-time updates via WebSocket.
+        """
+        
+        channel_layer = get_channel_layer()
+        
+        try:
+            # Extract data from request
+            files_json = request.data.get('files')
+            diff_str = request.data.get('diff_str', '')
+            llm_model = request.data.get('llm_model', settings.DEFAULT_LLM_MODEL if hasattr(settings, 'DEFAULT_LLM_MODEL') else 'gpt-4')
+            standards = request.data.get('standards', [])
+            metrics = request.data.get('metrics', [])
+            temperature = request.data.get('temperature', 0.3)
+            max_tokens = request.data.get('max_tokens', 32768)
+            max_tool_calls = request.data.get('max_tool_calls', 7)
+            
+            # NEW: Extract local repository context
+            workspace_path = request.data.get('workspace_path')
+            repository_name = request.data.get('repository_name')
+            git_remote_url = request.data.get('git_remote_url')
+            git_branch = request.data.get('git_branch')
+            is_git_repo = request.data.get('is_git_repo', False)
+            
+            # Validate required fields
+            if not files_json:
+                return Response(
+                    {"detail": "Files data is required"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Parse files if it's a JSON string
+            if isinstance(files_json, str):
+                try:
+                    files_dict = json.loads(files_json)
+                except json.JSONDecodeError:
+                    return Response(
+                        {"detail": "Invalid JSON format for files"},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+            else:
+                files_dict = files_json
+            
+            if not isinstance(files_dict, dict):
+                return Response(
+                    {"detail": "Files must be a dictionary"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Validate file count and size
+            if len(files_dict) > 100:  # Reasonable limit
+                return Response(
+                    {"detail": "Too many files. Maximum 100 files allowed."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            total_size = sum(len(content.encode('utf-8')) for content in files_dict.values())
+            if total_size > 10 * 1024 * 1024:  # 10MB limit
+                return Response(
+                    {"detail": "Total file size too large. Maximum 10MB allowed."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Create enhanced review_data with local repository context
+            enhanced_review_data = {
+                'files': files_dict,
+                'diff_str': diff_str,
+                'llm_model': llm_model,
+                'standards': standards,
+                'metrics': metrics,
+                'temperature': temperature,
+                'max_tokens': max_tokens,
+                'max_tool_calls': max_tool_calls,
+                # Local repository context
+                'workspace_path': workspace_path,
+                'repository_name': repository_name,
+                'git_remote_url': git_remote_url,
+                'git_branch': git_branch,
+                'is_git_repo': is_git_repo,
+                'files_count': len(files_dict),
+                'total_size_bytes': total_size,
+                'review_timestamp': timezone.now().isoformat()
+            }
+            
+            # Create a review record for VS Code reviews
+            review = ReviewModel.objects.create(
+                status='pending',
+                review_type='vscode',
+                created_by=request.user,
+                review_data=enhanced_review_data  # Store enhanced data
+            )
+            
+            logger.info(f"VS Code review initiated by user {request.user.username}, review ID: {review.id}, workspace: {workspace_path}")
+            
+            # Send initial WebSocket notification
+            if channel_layer:
+                async_to_sync(channel_layer.group_send)(
+                    f'user_{request.user.github_id}',
+                    {
+                        'type': 'review_status_update',
+                        'review_id': str(review.id),
+                        'status': 'pending',
+                        'progress': 0
+                    }
+                )
+            
+            # Prepare data for LangGraph service
+            review_data = {
+                'files': files_dict,
+                'diff_str': diff_str,
+                'llm_model': llm_model,
+                'standards': standards,
+                'metrics': metrics,
+                'temperature': temperature,
+                'max_tokens': max_tokens,
+                'max_tool_calls': max_tool_calls,
+                'user_github_token': request.user.github_access_token,
+                'review_id': str(review.id),
+                'user_id': str(request.user.github_id),
+                # Include workspace context for the task
+                'workspace_path': workspace_path,
+                'repository_name': repository_name,
+                'git_remote_url': git_remote_url,
+                'git_branch': git_branch,
+                'is_git_repo': is_git_repo
+            }
+            print(workspace_path, repository_name, git_remote_url, git_branch, is_git_repo)
+            # Process the review asynchronously using Celery
+            from .tasks.review_tasks import process_vscode_review_task
+            
+            # Queue the review task
+            task = process_vscode_review_task.delay(review.id, review_data)
+            
+            # Update review with task ID
+            review.status = 'processing'
+            review.save()
+            
+            # Send processing notification
+            if channel_layer:
+                async_to_sync(channel_layer.group_send)(
+                    f'user_{request.user.github_id}',
+                    {
+                        'type': 'review_status_update',
+                        'review_id': str(review.id),
+                        'status': 'processing',
+                        'progress': 10
+                    }
+                )
+            
+            logger.info(f"VS Code review queued for processing, review ID: {review.id}, task ID: {task.id}")
+            
+            return Response({
+                'review_id': review.id,
+                'status': 'processing',
+                'message': 'Review has been queued for processing. You will receive real-time updates via WebSocket.',
+                'websocket_url': f'ws://localhost:8000/ws/user/{request.user.github_id}/',
+                'task_id': task.id,
+                'workspace_info': {
+                    'workspace_path': workspace_path,
+                    'repository_name': repository_name,
+                    'is_git_repo': is_git_repo
+                }
+            }, status=status.HTTP_202_ACCEPTED)
+                
+        except Exception as e:
+            logger.error(f"VS Code review endpoint error: {str(e)}")
+            
+            # Send error notification if review was created
+            if 'review' in locals() and channel_layer:
+                async_to_sync(channel_layer.group_send)(
+                    f'user_{request.user.github_id}',
+                    {
+                        'type': 'review_status_update',
+                        'review_id': str(review.id),
+                        'status': 'failed',
+                        'progress': 0
+                    }
+                )
+            
+            return Response(
+                {"detail": f"Error processing VS Code review: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=False, methods=['get'], url_path='vscode-history', permission_classes=[IsAuthenticated])
+    def vscode_history(self, request):
+        """
+        Get VS Code review history with optional filtering by local repository.
+        
+        Query Parameters:
+        - limit: Number of reviews to return (default: 20)
+        - workspace_path: Optional local workspace path to filter reviews
+        - repository_name: Optional repository name to filter reviews
+        """
+        limit = int(request.query_params.get('limit', 20))
+        workspace_path = request.query_params.get('workspace_path')
+        repository_name = request.query_params.get('repository_name')
+        
+        # Base queryset for VS Code reviews by the current user
+        reviews_qs = ReviewModel.objects.filter(
+            review_type='vscode',
+            created_by=request.user
+        )
+        
+        # Apply filters if provided
+        if workspace_path:
+            # Filter by workspace path stored in review_data
+            reviews_qs = reviews_qs.filter(
+                review_data__workspace_path=workspace_path
+            )
+        
+        if repository_name:
+            # Filter by repository name stored in review_data
+            reviews_qs = reviews_qs.filter(
+                review_data__repository_name__icontains=repository_name
+            )
+        
+        # Order by most recent and limit results
+        reviews_qs = reviews_qs.order_by('-created_at')[:limit]
+        
+        # Serialize the results
+        serializer = self.get_serializer(reviews_qs, many=True)
+        
+        # Clean up the response data to remove unnecessary fields
+        response_data = []
+        for review_data in serializer.data:
+            # Safely handle review_data that might be None
+            review_data_dict = review_data.get('review_data') or {}
+            
+            cleaned_data = {
+                'id': review_data['id'],
+                'status': review_data['status'],
+                'created_at': review_data['created_at'],
+                'updated_at': review_data['updated_at'],
+                'error_message': review_data.get('error_message'),
+                # Include relevant metadata from review_data with safe access
+                'workspace_info': {
+                    'workspace_path': review_data_dict.get('workspace_path'),
+                    'repository_name': review_data_dict.get('repository_name'),
+                    'files_count': len(review_data_dict.get('files', {})),
+                    'llm_model': review_data_dict.get('llm_model')
+                }
+            }
+            response_data.append(cleaned_data)
+        
+        return Response(response_data)
