@@ -209,6 +209,6 @@ class Migration(migrations.Migration):
         ),
         migrations.AddConstraint(
             model_name='review',
-            constraint=models.CheckConstraint(condition=models.Q(('pull_request__isnull', False), ('commit__isnull', False), _connector='OR'), name='check_review_context'),
+            constraint=models.CheckConstraint(check=models.Q(('pull_request__isnull', False), ('commit__isnull', False), _connector='OR'), name='check_review_context'),
         ),
     ]
