@@ -2,6 +2,7 @@ from rest_framework.response import Response
 from rest_framework import status, viewsets
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import action
+from asgiref.sync import async_to_sync
 
 from .tasks.review_tasks import calculate_cost
 from .models import (
@@ -102,9 +103,7 @@ class ThreadViewSet(viewsets.ModelViewSet):
             except User.DoesNotExist:
                 logger.error(f"AI_USER_ID {settings.AI_USER_ID} not found")
                 # Continue with admin user
-        # Manage asyncio event loop explicitly
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        # Manage asyncio event loop explicitly using async_to_sync helpers
         # Process user's message with LangGraph
         try:
             # Get thread history to provide context for the conversation
@@ -124,8 +123,7 @@ class ThreadViewSet(viewsets.ModelViewSet):
             
             # Get LangGraph service
             langgraph_client_instance = LangGraphClient()
-            loop.run_until_complete(langgraph_client_instance.initialize())
-            # async_to_sync(langgraph_client_instance.initialize)()
+            async_to_sync(langgraph_client_instance.initialize)()
             # Determine if this is the first message in the thread
             is_first_message_in_thread = thread_comments.count() <= 1 # Only our new comment
             print(f"Is first message in thread: {is_first_message_in_thread} , {thread_comments.count()} comments in thread")
@@ -144,16 +142,15 @@ class ThreadViewSet(viewsets.ModelViewSet):
                     'coding_standards': review_model_instance.repository.coding_standards or [],
                     'code_metrics': review_model_instance.repository.code_metrics or [],
                 } 
-            response = loop.run_until_complete(
-                langgraph_client_instance.handle_feedback(
-                    feedback=message,
-                    thread_id=thread.thread_id,  # This is the LangGraph native thread_id
-                    user_id=str(request.user.github_id),
-                    # conversation_history=conversation_history, # If you want to pass the history
-                    is_first_message=is_first_message_in_thread,
-                    review_data=review_data_for_lg,
-                    repo_settings=repo_settings_for_lg
-            ))
+            response = async_to_sync(langgraph_client_instance.handle_feedback)(
+                feedback=message,
+                thread_id=thread.thread_id,  # This is the LangGraph native thread_id
+                user_id=str(request.user.github_id),
+                # conversation_history=conversation_history, # If you want to pass the history
+                is_first_message=is_first_message_in_thread,
+                review_data=review_data_for_lg,
+                repo_settings=repo_settings_for_lg
+            )
             # response = async_to_sync(langgraph_client_instance.handle_feedback)(
             #     # review_id=str(thread.review.id),
             #     feedback=message,
