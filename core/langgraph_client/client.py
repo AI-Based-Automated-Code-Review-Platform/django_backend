@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 class LangGraphClient:
     def __init__(self):
-        self.client = get_client(url=settings.LANGGRAPH_API_URL)
+        self.client = get_client(url=settings.LANGGRAPH_API_URL,timeout=settings.LANGGRAPH_API_TIMEOUT)
         self.assistants = None
         self.review_agent = None
         self.feedback_agent = None
